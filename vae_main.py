@@ -1,61 +1,54 @@
 import tensorflow as tf
 import numpy as np
 import PIL.Image as Image
-from xae.data import mnist_dataset
+from xae.data import celeba_dataset
+from xae.models import celebs
 
 tfgan = tf.contrib.gan
 ds = tf.contrib.distributions
+slim = tf.contrib.slim
 
 default_params = tf.contrib.training.HParams(
     latent_space_dim=2,
     observable_space_dims=[28, 28, 1],
-    learning_rate=1e-4
+    learning_rate=1e-4,
+)
+
+celebs_params = tf.contrib.training.HParams(
+    latent_space_dim=64,
+    observable_space_dims=[32, 32, 3],
+    learning_rate=1e-4,
+    batch_size=64,
+    train_data='/Users/jaonary/Data/celebA/img_align_celeba/*.jpg',
 )
 
 
-def decode(z, observable_space_dims):
-    with tf.variable_scope('Decoder', [z]):
-        logits = tf.layers.dense(z, 200, activation=tf.nn.tanh)
-        logits = tf.layers.dense(logits, np.prod(observable_space_dims))
-        return logits
-
-
-def encoder(x, observable_space_dim, latent_dim):
-
-    with tf.variable_scope('Encoder', [x]):
-        x = tf.reshape(x, [-1, np.prod(observable_space_dim)])
-        h = tf.layers.dense(x, 10, activation=tf.nn.tanh)
-        mu = tf.layers.dense(h, latent_dim)
-        sigma_sq = tf.layers.dense(h, latent_dim)
-
-        return mu, sigma_sq
-
-
-def input_fn():
-    dataset = (mnist_dataset.train('data/mnist')
-               .repeat()
-               .cache()
-               .shuffle(buffer_size=50000)
-               .batch(128)
-               )
-    (images, _) = dataset.make_one_shot_iterator().get_next()
-
-    images = tf.reshape(images, [128, 28, 28, 1])
-
-    return images, images
+# def input_fn():
+#     dataset = (mnist_dataset.train('data/mnist')
+#                .repeat()
+#                .cache()
+#                .shuffle(buffer_size=50000)
+#                .batch(128)
+#                )
+#     (images, _) = dataset.make_one_shot_iterator().get_next()
+#
+#     images = tf.reshape(images, [128, 28, 28, 1])
+#
+#     return images, images
 
 
 def model_fn(features, labels, mode, params):
     x = features
 
-    q_mu, q_cov = encoder(x, params.observable_space_dims, params.latent_space_dim)
-    q_z_given_x = ds.MultivariateNormalDiag(q_mu, q_cov)
+    q_z_given_x = celebs.encode(x, params.latent_space_dim)
 
     z_samples = q_z_given_x.sample()
 
-    p_x_given_z_logits = decode(z_samples, params.observable_space_dims)
-    p_x_given_z = ds.Bernoulli(logits=p_x_given_z_logits)
-    x_mean = p_x_given_z.mean()
+    p_x_given_z = celebs.decode(z_samples, params.observable_space_dims[0])
+
+    x_mean = tf.reshape(p_x_given_z.mean(), [params.batch_size] + params.observable_space_dims)
+    x_mean.set_shape([params.batch_size]+params.observable_space_dims)
+
     reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
     tf.summary.image('reconstruction/x_mean', reconstruction)
 
@@ -69,7 +62,16 @@ def model_fn(features, labels, mode, params):
     KL = ds.kl_divergence(q_z_given_x, prior)
 
     # The ELBO = reconstruction term + regularization term
-    elbo = tf.reduce_sum(tf.reduce_sum(p_x_given_z.log_prob(labels), axis=[1, 2, 3]) - KL)
+    print('kl', KL)
+
+    log_prob = p_x_given_z.log_prob(slim.flatten(labels))
+    # log_prob = tf.Print(log_prob, [tf.shape(log_prob)], "log prob")
+    print('z_samples', z_samples)
+    print('labels', slim.flatten(labels))
+    print('log prob', log_prob)
+    print('x mean', x_mean)
+    # elbo = tf.reduce_sum(tf.reduce_sum(log_prob,) - KL)
+    elbo = tf.reduce_sum(log_prob - KL)
     loss = - elbo
 
     optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
@@ -85,5 +87,12 @@ def model_fn(features, labels, mode, params):
 if __name__ == '__main__':
     tf.logging.set_verbosity(tf.logging.INFO)
 
-    estimator = tf.estimator.Estimator(model_fn=model_fn, model_dir='training', params=default_params)
-    estimator.train(input_fn=input_fn)
+    config = tf.estimator.RunConfig(save_summary_steps=10)
+
+    estimator = tf.estimator.Estimator(model_fn=model_fn,
+                                       model_dir='celeba_training',
+                                       params=celebs_params,
+                                       config=config)
+    estimator.train(input_fn=lambda: celeba_dataset.image_file_inputs(celebs_params.train_data,
+                                                                      batch_size=celebs_params.batch_size,
+                                                                      patch_size=celebs_params.observable_space_dims[0]))
