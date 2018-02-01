@@ -3,6 +3,7 @@ import numpy as np
 import PIL.Image as Image
 from xae.data import celeba_dataset
 from xae.models import celebs
+from xae.models.dcgan_generator import DCGANGenerator
 
 tfgan = tf.contrib.gan
 ds = tf.contrib.distributions
@@ -15,6 +16,11 @@ default_params = tf.contrib.training.HParams(
 )
 
 celebs_params = tf.contrib.training.HParams(
+    generator={
+        'final_size': 32,
+        'depth': 64,
+        'num_outputs': 3
+    },
     latent_space_dim=64,
     observable_space_dims=[32, 32, 3],
     learning_rate=1e-4,
@@ -38,15 +44,18 @@ celebs_params = tf.contrib.training.HParams(
 
 
 def model_fn(features, labels, mode, params):
+
+    is_training = mode == tf.estimator.ModeKeys.TRAIN
+
     x = features
 
     q_z_given_x = celebs.encode(x, params.latent_space_dim)
 
     z_samples = q_z_given_x.sample()
 
-    p_x_given_z = celebs.decode(z_samples, params.observable_space_dims[0])
+    generator = DCGANGenerator(z_samples, params.generator, is_training)
 
-    x_mean = tf.reshape(p_x_given_z.mean(), [params.batch_size] + params.observable_space_dims)
+    x_mean = tf.reshape(generator.mean, [params.batch_size] + params.observable_space_dims)
     x_mean.set_shape([params.batch_size]+params.observable_space_dims)
 
     reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
@@ -62,17 +71,12 @@ def model_fn(features, labels, mode, params):
     KL = ds.kl_divergence(q_z_given_x, prior)
 
     # The ELBO = reconstruction term + regularization term
-    print('kl', KL)
+    reconstruction_loss = generator.reconstruction_loss(labels)
+    # tf.summary.scalar('reconstruction/loss', reconstruction_loss)
 
-    log_prob = p_x_given_z.log_prob(slim.flatten(labels))
-    # log_prob = tf.Print(log_prob, [tf.shape(log_prob)], "log prob")
-    print('z_samples', z_samples)
-    print('labels', slim.flatten(labels))
-    print('log prob', log_prob)
-    print('x mean', x_mean)
     # elbo = tf.reduce_sum(tf.reduce_sum(log_prob,) - KL)
-    elbo = tf.reduce_sum(log_prob - KL)
-    loss = - elbo
+    elbo = tf.reduce_sum(reconstruction_loss - KL)
+    loss = -elbo
 
     optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
     train_op = optimizer.minimize(loss, tf.train.get_or_create_global_step())
@@ -90,7 +94,7 @@ if __name__ == '__main__':
     config = tf.estimator.RunConfig(save_summary_steps=10)
 
     estimator = tf.estimator.Estimator(model_fn=model_fn,
-                                       model_dir='celeba_training',
+                                       model_dir='celeba_training_2',
                                        params=celebs_params,
                                        config=config)
     estimator.train(input_fn=lambda: celeba_dataset.image_file_inputs(celebs_params.train_data,
