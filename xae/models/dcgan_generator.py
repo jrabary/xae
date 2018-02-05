@@ -102,3 +102,4 @@ class DCGANGenerator(Generator):
             log_prob = self.p_x_given_z.log_prob(slim.flatten(targets))
 
         return log_prob
+

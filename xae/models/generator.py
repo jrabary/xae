@@ -31,6 +31,12 @@ class Generator(object):
     def mean(self):
         return self.p_x_given_z.mean()
 
+    def get_variables(self):
+        return tf.get_collection(tf.GraphKeys.VARIABLES, self._scope)
+
+    def get_trainable_variables(self):
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self._scope)
+
     @abstractmethod
     def _compute_prob_x_given_z(self, latent_tensors, params):
         pass

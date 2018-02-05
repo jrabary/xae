@@ -27,6 +27,15 @@ class Encoder(object):
     def q_z_given_x(self):
         return self._q_z_given_x
 
+    def sample(self):
+        return self._q_z_given_x.sample()
+
+    def get_variables(self):
+        return tf.get_collection(tf.GraphKeys.VARIABLES, self._scope)
+
+    def get_trainable_variables(self):
+        return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self._scope)
+
     @abstractmethod
     def _compute_prob_z_given_x(self, obs_tensors, params):
         pass

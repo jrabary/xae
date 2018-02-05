@@ -6,6 +6,8 @@ import PIL.Image as Image
 from xae.data import celeba_dataset
 from xae.models import celebs
 from xae.models.dcgan_generator import DCGANGenerator
+from xae.models.dcgan_encoder import DCGANEncoder
+
 from xae.models.latent_discriminator import discriminator_fn as z_discriminator_fn
 
 tfgan = tf.contrib.gan
@@ -20,6 +22,12 @@ default_params = tf.contrib.training.HParams(
 )
 
 celebs_params = tf.contrib.training.HParams(
+
+    encoder={
+        'depth': 128,
+        'latent_space_dim': 64,
+    },
+
     generator={
         'final_size': 32,
         'depth': 64,
@@ -58,7 +66,9 @@ class WAEGanTrainOps(collections.namedtuple('WAEGANTrainOps',
 
 
 def wae_gan_train_ops(
-        model,
+        encoder_variables,
+        decoder_variables,
+        latent_discriminator_variables,
         ae_loss,
         latent_gan_loss,
         ae_optimizer,
@@ -113,7 +123,7 @@ def wae_gan_train_ops(
         ae_train_op = training.create_train_op(
             total_loss=ae_loss,
             optimizer=ae_optimizer,
-            variables_to_train=model.encoder.get_variables() + model.decoder.get_variables(),
+            variables_to_train=encoder_variables + decoder_variables,
             global_step=ae_global_step,
             update_ops=ae_update_ops,
             **kwargs)
@@ -134,7 +144,7 @@ def wae_gan_train_ops(
         latent_gan_train_op = training.create_train_op(
             total_loss=latent_gan_loss,
             optimizer=latent_gan_optimizer,
-            variables_to_train=model.latent_discriminator.get_variables(),
+            variables_to_train=latent_discriminator_variables,
             global_step=latent_gan_global_step,
             update_ops=latent_dis_update_ops,
             **kwargs)
@@ -147,17 +157,20 @@ def model_fn(features, labels, mode, params):
 
     x = features
 
-    q_z_given_x = celebs.encode(x, params.latent_space_dim)
+    encoder = DCGANEncoder(x, params.encoder, is_training)
 
-    z_samples = q_z_given_x.sample()
+    # q_z_given_x = celebs.encode(x, params.latent_space_dim)
+
+    z_samples = encoder.sample()
 
     generator = DCGANGenerator(z_samples, params.generator, is_training)
 
     x_mean = tf.reshape(generator.mean, [params.batch_size] + params.observable_space_dims)
-    x_mean.set_shape([params.batch_size] + params.observable_space_dims)
+    x_mean.set_shape([params.batch_size]+params.observable_space_dims)
 
     reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
     tf.summary.image('reconstruction/x_mean', reconstruction)
+
 
     # compute loss
     # prior := p_z
@@ -165,14 +178,14 @@ def model_fn(features, labels, mode, params):
                                       scale_diag=tf.ones([1, params.latent_space_dim], dtype=tf.float32))
 
     # KL can be seen as regularization term!
-    KL = ds.kl_divergence(q_z_given_x, prior)
+    KL = ds.kl_divergence(encoder.q_z_given_x, prior)
 
     # The ELBO = reconstruction term + regularization term
     reconstruction_loss = generator.reconstruction_loss(labels)
     # tf.summary.scalar('reconstruction/loss', reconstruction_loss)
 
     # elbo = tf.reduce_sum(tf.reduce_sum(log_prob,) - KL)
-    elbo = tf.reduce_sum(reconstruction_loss - KL)
+    elbo = tf.reduce_mean(reconstruction_loss - KL)
     loss = -elbo
 
     optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
@@ -189,10 +202,9 @@ def wae_model_fn(features, labels, mode, params):
     is_training = mode == tf.estimator.ModeKeys.TRAIN
 
     x = features
-
-    q_z_given_x = celebs.encode(x, params.latent_space_dim)
-
-    z_from_q_z = q_z_given_x.sample()
+    # latent space
+    encoder = DCGANEncoder(x, params.encoder, is_training)
+    z_from_q_z = encoder.sample()
 
     generator = DCGANGenerator(z_from_q_z, params.generator, is_training)
 
@@ -204,18 +216,17 @@ def wae_model_fn(features, labels, mode, params):
 
     # compute losses
     # JS(q_z, p_z) using GAN
-    p_z = ds.MultivariateNormalDiag(loc=tf.zeros([1, params.latent_space_dim], dtype=tf.float32),
-                                    scale_diag=tf.ones([1, params.latent_space_dim], dtype=tf.float32))
-    z_from_p_z = p_z.sample()
+    p_z = ds.MultivariateNormalDiag(loc=tf.zeros([params.latent_space_dim], dtype=tf.float32),
+                                    scale_diag=tf.ones([params.latent_space_dim], dtype=tf.float32))
+    z_from_p_z = p_z.sample(params.batch_size)
 
+    # Build the GAN loss.
     gan_model = tfgan.gan_model(
         generator_fn=tf.identity,
         discriminator_fn=lambda z, _: z_discriminator_fn(z),
         real_data=z_from_p_z,
-        discriminator_scope='',
+        discriminator_scope='LatentDiscriminator',
         generator_inputs=z_from_q_z)
-
-    # Build the GAN loss.
     generator_loss = functools.partial(tfgan.losses.modified_generator_loss, label_smoothing=0.)
     discriminator_loss = functools.partial(tfgan.losses.modified_discriminator_loss, label_smoothing=0.)
     gan_loss = tfgan.gan_loss(
@@ -232,7 +243,19 @@ def wae_model_fn(features, labels, mode, params):
     # tf.summary.scalar('reconstruction/loss', reconstruction_loss)
 
     wae_optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
-    wae_train_op = wae_optimizer.minimize(wae_loss, tf.train.get_or_create_global_step())
+    latent_gan_optimizer = tf.train.AdadeltaOptimizer(learning_rate=params.learning_rate)
+
+    latent_dis_variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'LatentDiscriminator')
+    train_ops = wae_gan_train_ops(encoder.get_trainable_variables(),
+                                  generator.get_trainable_variables(),
+                                  latent_dis_variables,
+                                  wae_loss,
+                                  gan_loss.discriminator_loss,
+                                  wae_optimizer,
+                                  latent_gan_optimizer
+                                  )
+
+    # Define Run Hooks
 
     return tf.estimator.EstimatorSpec(
         mode=mode,
