@@ -1,0 +1,2 @@
+from xae.models.deterministic_dcgan_generator import DeterministicDCGANGenerator
+from xae.models.dcgan_generator import DCGANGenerator

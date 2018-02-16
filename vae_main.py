@@ -1,19 +1,20 @@
 import functools
 import collections
 import tensorflow as tf
+from tensorflow.contrib.gan.python.train import RunTrainOpsHook
 import numpy as np
 import PIL.Image as Image
 from xae.data import celeba_dataset
-from xae.models import celebs
-from xae.models.dcgan_generator import DCGANGenerator
-from xae.models.dcgan_encoder import DCGANEncoder
 
+from xae.models import DCGANGenerator, DeterministicDCGANGenerator
+from xae.models.dcgan_encoder import DCGANEncoder
 from xae.models.latent_discriminator import discriminator_fn as z_discriminator_fn
 
 tfgan = tf.contrib.gan
 ds = tf.contrib.distributions
 slim = tf.contrib.slim
 training = tf.contrib.training
+framework = tf.contrib.framework
 
 default_params = tf.contrib.training.HParams(
     latent_space_dim=2,
@@ -29,13 +30,13 @@ celebs_params = tf.contrib.training.HParams(
     },
 
     generator={
-        'final_size': 32,
+        'final_size': 64,
         'depth': 64,
         'num_outputs': 3
     },
     gamma=10.,  # regularization hyper parameters
     latent_space_dim=64,
-    observable_space_dims=[32, 32, 3],
+    observable_space_dims=[64, 64, 3],
     learning_rate=1e-4,
     batch_size=64,
     train_data='/Users/jaonary/Data/celebA/img_align_celeba/*.jpg',
@@ -64,7 +65,6 @@ class WAEGanTrainOps(collections.namedtuple('WAEGANTrainOps',
                                             ('ae_train_op', 'latent_gan_train_op', 'global_step_inc'))):
     """WAE-GAN Train operators"""
 
-
 def wae_gan_train_ops(
         encoder_variables,
         decoder_variables,
@@ -73,52 +73,19 @@ def wae_gan_train_ops(
         latent_gan_loss,
         ae_optimizer,
         latent_gan_optimizer,
-        check_for_unused_update_ops=True,
-        # Optional args to pass directly to the `create_train_op`.
         **kwargs):
-    """Returns GAN train ops.
+    """Returns WAE-GAN train ops.
 
-    The highest-level call in TFGAN. It is composed of functions that can also
-    be called, should a user require more control over some part of the GAN
-    training process.
-
-    Args:
-      model: A WAEModel.
-      loss: A GANLoss.
-      generator_optimizer: The optimizer for generator updates.
-      discriminator_optimizer: The optimizer for the discriminator updates.
-      check_for_unused_update_ops: If `True`, throws an exception if there are
-        update ops outside of the generator or discriminator scopes.
-      **kwargs: Keyword args to pass directly to
-        `training.create_train_op` for both the generator and
-        discriminator train op.
-
-    Returns:
-      A GANTrainOps tuple of (generator_train_op, discriminator_train_op) that can
-      be used to train a generator/discriminator pair.
     """
     # Create global step increment op.
     global_step = tf.train.get_or_create_global_step()
     global_step_inc = global_step.assign_add(1)
 
-    ae_update_ops = []
+    ae_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     latent_dis_update_ops = []
 
-    ae_global_step = None
-    if isinstance(generator_optimizer,
-                  sync_replicas_optimizer.SyncReplicasOptimizer):
-        # TODO(joelshor): Figure out a way to get this work without including the
-        # dummy global step in the checkpoint.
-        # WARNING: Making this variable a local variable causes sync replicas to
-        # hang forever.
-        generator_global_step = variable_scope.get_variable(
-            'dummy_global_step_generator',
-            shape=[],
-            dtype=global_step.dtype.base_dtype,
-            initializer=init_ops.zeros_initializer(),
-            trainable=False,
-            collections=[ops.GraphKeys.GLOBAL_VARIABLES])
-        ae_update_ops += [ae_global_step.assign(global_step)]
+    ae_global_step = framework.local_variable(tf.zeros((), dtype=tf.int64), name='ae_global_step')
+    ae_update_ops += [ae_global_step.assign(global_step)]
     with tf.name_scope('ae_train'):
         ae_train_op = training.create_train_op(
             total_loss=ae_loss,
@@ -128,18 +95,8 @@ def wae_gan_train_ops(
             update_ops=ae_update_ops,
             **kwargs)
 
-    latent_gan_global_step = None
-    if isinstance(discriminator_optimizer,
-                  sync_replicas_optimizer.SyncReplicasOptimizer):
-        # See comment above `generator_global_step`.
-        discriminator_global_step = variable_scope.get_variable(
-            'dummy_global_step_discriminator',
-            shape=[],
-            dtype=global_step.dtype.base_dtype,
-            initializer=init_ops.zeros_initializer(),
-            trainable=False,
-            collections=[ops.GraphKeys.GLOBAL_VARIABLES])
-        latent_dis_update_ops += [latent_gan_global_step.assign(global_step)]
+    latent_gan_global_step = framework.local_variable(tf.zeros((), dtype=tf.int64), name='latent_gan_global_step')
+    latent_dis_update_ops += [latent_gan_global_step.assign(global_step)]
     with tf.name_scope('latent_gran_train'):
         latent_gan_train_op = training.create_train_op(
             total_loss=latent_gan_loss,
@@ -152,7 +109,27 @@ def wae_gan_train_ops(
     return WAEGanTrainOps(ae_train_op, latent_gan_train_op, global_step_inc)
 
 
+def get_sequential_train_hooks(wae_train_steps=1, latent_gan_train_steps=1):
+    """Returns a hooks function for sequential WAE-GAN training.
+    Args:
+      wae_train_steps:
+
+      latent_gan_train_steps:
+    Returns:
+      A function that takes a WAE-GANTrainOps tuple and returns a list of hooks.
+    """
+
+    def get_hooks(train_ops):
+        wae_hook = RunTrainOpsHook(train_ops.ae_train_op, wae_train_steps)
+        latent_gan_hook = RunTrainOpsHook(train_ops.latent_gan_train_op, latent_gan_train_steps)
+        return [wae_hook, latent_gan_hook]
+
+    return get_hooks
+
+
 def model_fn(features, labels, mode, params):
+    """ VAE model function.
+    """
     is_training = mode == tf.estimator.ModeKeys.TRAIN
 
     x = features
@@ -166,11 +143,10 @@ def model_fn(features, labels, mode, params):
     generator = DCGANGenerator(z_samples, params.generator, is_training)
 
     x_mean = tf.reshape(generator.mean, [params.batch_size] + params.observable_space_dims)
-    x_mean.set_shape([params.batch_size]+params.observable_space_dims)
+    x_mean.set_shape([params.batch_size] + params.observable_space_dims)
 
     reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
     tf.summary.image('reconstruction/x_mean', reconstruction)
-
 
     # compute loss
     # prior := p_z
@@ -206,7 +182,7 @@ def wae_model_fn(features, labels, mode, params):
     encoder = DCGANEncoder(x, params.encoder, is_training)
     z_from_q_z = encoder.sample()
 
-    generator = DCGANGenerator(z_from_q_z, params.generator, is_training)
+    generator = DeterministicDCGANGenerator(z_from_q_z, params.generator, is_training)
 
     x_mean = tf.reshape(generator.mean, [params.batch_size] + params.observable_space_dims)
     x_mean.set_shape([params.batch_size] + params.observable_space_dims)
@@ -237,8 +213,11 @@ def wae_model_fn(features, labels, mode, params):
     # The reconstruction loss
     reconstruction_loss = generator.reconstruction_loss(labels)
 
-    # WAE objective = reconstruction_loss + lambda*D(q_z, p_z)
+    # WAE objective = reconstruction_loss + gamma*D(q_z, p_z)
     wae_loss = reconstruction_loss + params.gamma * gan_loss.generator_loss
+    tf.summary.scalar('losses/reconstruction', reconstruction_loss)
+    tf.summary.scalar('losses/penalty', gan_loss.generator_loss)
+    tf.summary.scalar('losses/wae', wae_loss)
 
     # tf.summary.scalar('reconstruction/loss', reconstruction_loss)
 
@@ -255,12 +234,17 @@ def wae_model_fn(features, labels, mode, params):
                                   latent_gan_optimizer
                                   )
 
+    training_hook_fn = get_sequential_train_hooks()
+
+    training_hooks = training_hook_fn(train_ops)
+
     # Define Run Hooks
 
     return tf.estimator.EstimatorSpec(
         mode=mode,
-        loss=loss,
-        train_op=train_op
+        loss=wae_loss,
+        train_op=train_ops.global_step_inc,
+        training_hooks=training_hooks
     )
 
 
@@ -269,11 +253,11 @@ if __name__ == '__main__':
 
     config = tf.estimator.RunConfig(save_summary_steps=10)
 
-    estimator = tf.estimator.Estimator(model_fn=model_fn,
-                                       model_dir='celeba_training_2',
+    estimator = tf.estimator.Estimator(model_fn=wae_model_fn,
+                                       model_dir='training/celeba_wae_gan',
                                        params=celebs_params,
                                        config=config)
     estimator.train(input_fn=lambda: celeba_dataset.image_file_inputs(celebs_params.train_data,
                                                                       batch_size=celebs_params.batch_size,
                                                                       patch_size=celebs_params.observable_space_dims[
-                                                                          0]))
+                                                                          0]), steps=10000)

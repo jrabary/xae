@@ -22,7 +22,7 @@ def close_crop(image, patch_size):
     output = tf.squeeze(resize, axis=0)
     output.set_shape([patch_size, patch_size, 3])
 
-    output = tf.to_float(output) / 255.
+    output = tf.to_float(output) * 2 / 255. - 1.
 
     return output
 
@@ -30,6 +30,8 @@ def close_crop(image, patch_size):
 def image_file_inputs(file_patters, batch_size=32, patch_size=32):
 
     dataset = (tf.data.Dataset.list_files(file_patters)
+               .shuffle(1024)
+               .repeat()
                .map(tf.read_file)
                .map(tf.image.decode_image)
                .map(lambda x: close_crop(x, patch_size))
