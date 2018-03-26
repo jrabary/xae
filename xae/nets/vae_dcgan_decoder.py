@@ -12,7 +12,7 @@ class VAEDCGanDecoder(GaussianDecoder):
     def __init__(self, params):
         super(VAEDCGanDecoder, self).__init__(params)
 
-    def _mean_and_std(self, z, is_training):
+    def _mean_and_std(self, z, is_training, reuse):
 
         final_size = self._params['output_size']
         depth = self._params['depth']
@@ -27,7 +27,7 @@ class VAEDCGanDecoder(GaussianDecoder):
 
         end_points = {}
         num_layers = int(log(final_size, 2)) - 1
-        with tf.variable_scope(self._scope, values=[z]):
+        with tf.variable_scope(self._scope, values=[z], reuse=reuse):
             with slim.arg_scope([slim.conv2d_transpose],
                                 normalizer_fn=self._normalizer_fn,
                                 stride=2,

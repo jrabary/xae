@@ -9,7 +9,7 @@ slim = tf.contrib.slim
 ds = tf.contrib.distributions
 
 
-class Encoder(object):
+class ProbabilisticEncoder(object):
     """Abstract base class for VAE encoder.
 
 
@@ -35,7 +35,7 @@ class Encoder(object):
         pass
 
 
-class GaussianEncoder(Encoder):
+class GaussianEncoder(ProbabilisticEncoder):
     """Base class for multivariate gaussian encoder"""
 
     def __init__(self, params):
@@ -68,7 +68,7 @@ class GaussianEncoder(Encoder):
         pass
 
 
-class Decoder(object):
+class ProbabilisticDecoder(object):
     __metaclass__ = ABCMeta
 
     def __init__(self, params):
@@ -83,7 +83,7 @@ class Decoder(object):
         # self._p_x_given_z = self._compute_prob_x_given_z(latent_tensors, params)
 
     @abstractmethod
-    def p_x_given_z(self, z, is_training):
+    def p_x_given_z(self, z, is_training, reuse=False):
         pass
 
     # @property
@@ -105,7 +105,7 @@ class Decoder(object):
     #     pass
 
 
-class GaussianDecoder(Decoder):
+class GaussianDecoder(ProbabilisticDecoder):
     """
     Base class for multivariate gaussian decoder.
     """
@@ -113,12 +113,12 @@ class GaussianDecoder(Decoder):
     def __init__(self, params):
         super(GaussianDecoder, self).__init__(params)
 
-    def p_x_given_z(self, z, is_training):
-        means, log_sigmas = self._mean_and_std(z, is_training)
+    def p_x_given_z(self, z, is_training, reuse=False):
+        means, log_sigmas = self._mean_and_std(z, is_training, reuse)
         return ds.MultivariateNormalDiag(means, log_sigmas)
 
     @abstractmethod
-    def _mean_and_std(self, z, is_training):
+    def _mean_and_std(self, z, is_training, reuse):
         """
         Compute mean and standard deviation.
         Args:

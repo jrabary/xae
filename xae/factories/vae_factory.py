@@ -38,7 +38,7 @@ def make_decoder(params):
 def make_prior(latent_space_dim):
 
     def prior_fn():
-        return ds.MultivariateNormalDiag(loc=tf.zeros([1, latent_space_dim], dtype=tf.float32),
-                                         scale_diag=tf.ones([1, latent_space_dim], dtype=tf.float32))
+        return ds.MultivariateNormalDiag(loc=tf.zeros([latent_space_dim], dtype=tf.float32),
+                                         scale_diag=tf.ones([latent_space_dim], dtype=tf.float32))
 
     return prior_fn

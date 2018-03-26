@@ -31,6 +31,9 @@ class VAE(tf.estimator.Estimator):
         x = features
         real_x = labels
 
+        # Get the prior
+        prior = self._prior()
+
         # Get the encoder probability distribution: Q(Z|X)
         q_z_given_x = self._encoder.q_z_given_x(x, is_training)
 
@@ -39,16 +42,10 @@ class VAE(tf.estimator.Estimator):
         # Get the decoder probability distribution: Pg(X|Z)
         p_x_given_z = self._decoder.p_x_given_z(z_samples, is_training)
 
-        # Display the mean of P(X|Z)
         output_shape = [params.batch_size] + 2*[params.decoder['output_size']] + [params.decoder['output_channels']]
-        x_mean = tf.reshape(p_x_given_z.mean(), output_shape)
-        x_mean.set_shape(output_shape)
-        reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
-        tf.summary.image('Reconstruction/x_mean', reconstruction)
 
         # compute loss
         # KL can be seen as regularization term!
-        prior = self._prior()
         KL = ds.kl_divergence(q_z_given_x, prior)
 
         # The ELBO = reconstruction term + regularization term
@@ -59,11 +56,38 @@ class VAE(tf.estimator.Estimator):
         elbo = tf.reduce_mean(reconstruction_loss - KL)
         loss = -elbo
 
-        optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
-        train_op = optimizer.minimize(loss, tf.train.get_or_create_global_step())
+        if mode == tf.estimator.ModeKeys.TRAIN:
+            # Display the mean of P(X|Z)
+            x_mean = tf.reshape(p_x_given_z.mean(), output_shape)
+            x_mean.set_shape(output_shape)
+            reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
+            tf.summary.image('Reconstruction/x_mean', reconstruction)
 
-        return tf.estimator.EstimatorSpec(
-            mode=mode,
-            loss=loss,
-            train_op=train_op
-        )
+            noise_samples = prior.sample(params.batch_size)
+            p_x_given_noise = self._decoder.p_x_given_z(noise_samples, is_training, reuse=True)
+            x_mean = tf.reshape(p_x_given_noise.mean(), output_shape)
+            x_mean.set_shape(output_shape)
+            reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
+            tf.summary.image('Sample/x_mean', reconstruction)
+
+            optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
+            train_op = optimizer.minimize(loss, tf.train.get_or_create_global_step())
+
+            return tf.estimator.EstimatorSpec(
+                mode=mode,
+                loss=loss,
+                train_op=train_op
+            )
+
+        if mode == tf.estimator.ModeKeys.EVAL:
+
+            noise_samples = prior.sample(params.batch_size)
+            p_x_given_noise = self._decoder.p_x_given_z(noise_samples, is_training, reuse=True)
+            x_mean = tf.reshape(p_x_given_noise.mean(), output_shape)
+            x_mean.set_shape(output_shape)
+            reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
+            tf.summary.image('Reconstruction/x_mean', reconstruction)
+            return tf.estimator.EstimatorSpec(
+                mode=mode,
+                loss=loss
+            )

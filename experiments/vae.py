@@ -11,7 +11,9 @@ if __name__ == '__main__':
 
     params = vae_hparams.default_params()
 
-    config = tf.estimator.RunConfig(save_summary_steps=10)
+    config = tf.estimator.RunConfig(save_summary_steps=20, save_checkpoints_secs=300)
+
+    mode = 'train'
 
     model_dir = '/tmp/vae'
 
