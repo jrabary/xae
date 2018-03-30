@@ -5,7 +5,7 @@ def default_params():
 
     return tf.contrib.training.HParams(
 
-        input_shape=[28, 28, 1],
+        input_shape=[32, 32, 3],
 
         encoder={
             'name': 'dcgan',

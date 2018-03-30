@@ -5,11 +5,13 @@ from abc import abstractmethod
 
 import tensorflow as tf
 
+from xae.nets.base_network import BaseNetwork
+
 slim = tf.contrib.slim
 ds = tf.contrib.distributions
 
 
-class ProbabilisticEncoder(object):
+class ProbabilisticEncoder(BaseNetwork):
     """Abstract base class for VAE encoder.
 
 
@@ -17,14 +19,7 @@ class ProbabilisticEncoder(object):
     __metaclass__ = ABCMeta
 
     def __init__(self, params):
-        self._scope = 'Encoder'
-        self._params = params
-        self._normalizer_fn = None # slim.batch_norm
-        # self._normalizer_fn_args = {
-        #     'is_training': is_training,
-        #     'zero_debias_moving_mean': True,
-        #     'fused': True,
-        # }
+        super(ProbabilisticEncoder, self).__init__('Encoder', params)
 
     @property
     def latent_space_dim(self):
@@ -51,21 +46,8 @@ class GaussianEncoder(ProbabilisticEncoder):
         Returns:
             An instance of ds.MultivariateNormalDiag distribution
         """
-        means, log_sigmas = self._mean_and_std(x, is_training)
+        means, log_sigmas = self.forward(x, is_training)
         return ds.MultivariateNormalDiag(means, log_sigmas)
-
-    @abstractmethod
-    def _mean_and_std(self, x, is_training):
-        """
-
-        Args:
-            x:
-            is_training:
-
-        Returns:
-            (means, std) tuple
-        """
-        pass
 
 
 class ProbabilisticDecoder(object):

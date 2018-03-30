@@ -25,5 +25,7 @@ if __name__ == '__main__':
 
     estimator = VAE(encoder, decoder, prior, model_dir, params, config)
 
-    estimator.train(lambda: celeba_dataset.image_file_inputs(params.train_data))
+    estimator.train(lambda: celeba_dataset.image_file_inputs(params.train_data,
+                                                             params.batch_size,
+                                                             params.input_shape[0]))
 

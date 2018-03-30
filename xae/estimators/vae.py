@@ -32,7 +32,8 @@ class VAE(tf.estimator.Estimator):
         real_x = labels
 
         # Get the prior
-        prior = self._prior()
+        with tf.variable_scope('prior'):
+            prior = self._prior()
 
         # Get the encoder probability distribution: Q(Z|X)
         q_z_given_x = self._encoder.q_z_given_x(x, is_training)
@@ -61,7 +62,10 @@ class VAE(tf.estimator.Estimator):
             x_mean = tf.reshape(p_x_given_z.mean(), output_shape)
             x_mean.set_shape(output_shape)
             reconstruction = tfgan.eval.image_reshaper(x_mean, num_cols=8)
+            features.set_shape([params.batch_size] + params.input_shape)
+            targets = tfgan.eval.image_reshaper(features, num_cols=8)
             tf.summary.image('Reconstruction/x_mean', reconstruction)
+            tf.summary.image('Reconstruction/x_targets', targets)
 
             noise_samples = prior.sample(params.batch_size)
             p_x_given_noise = self._decoder.p_x_given_z(noise_samples, is_training, reuse=True)
