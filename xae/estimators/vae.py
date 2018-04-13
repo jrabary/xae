@@ -46,16 +46,27 @@ class VAE(tf.estimator.Estimator):
         output_shape = [params.batch_size] + 2*[params.decoder['output_size']] + [params.decoder['output_channels']]
 
         # compute loss
+        # Combine terms from each component to form the (negative) ELBO
+        # avg_logq = tf.reduce_mean(q_z_given_x.log_prob(z_samples))
+        # avg_logp_z = tf.reduce_mean(prior.log_prob(z_samples))
+        # avg_logp_x_given_z = tf.reduce_mean(p_x_given_z.log_prob(slim.flatten(real_x)))
+        # elbo = avg_logq - (avg_logp_z + avg_logp_x_given_z)
+        #
+        # tf.summary.scalar("prior", avg_logp_z)
+        # tf.summary.scalar("likelihood", avg_logp_x_given_z)
+        # tf.summary.scalar("entropy", -avg_logq)
+        # tf.summary.scalar("elbo", elbo)
+
         # KL can be seen as regularization term!
         KL = ds.kl_divergence(q_z_given_x, prior)
-
-        # The ELBO = reconstruction term + regularization term
-        reconstruction_loss = p_x_given_z.log_prob(slim.flatten(real_x))
-        tf.summary.scalar('Losses/reconstruction', tf.reduce_mean(reconstruction_loss))
+        #
+        # # The ELBO = reconstruction term + regularization term
+        reconstruction_loss = tf.reduce_mean(p_x_given_z.log_prob(slim.flatten(real_x)))
+        tf.summary.scalar('Losses/reconstruction', reconstruction_loss)
         tf.summary.scalar('Losses/kl', tf.reduce_mean(KL))
-
-        elbo = tf.reduce_mean(reconstruction_loss - KL)
-        loss = -elbo
+        #
+        elbo = tf.reduce_mean(KL - reconstruction_loss)
+        # loss = -elbo
 
         if mode == tf.estimator.ModeKeys.TRAIN:
             # Display the mean of P(X|Z)
@@ -75,11 +86,11 @@ class VAE(tf.estimator.Estimator):
             tf.summary.image('Sample/x_mean', reconstruction)
 
             optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
-            train_op = optimizer.minimize(loss, tf.train.get_or_create_global_step())
+            train_op = optimizer.minimize(elbo, tf.train.get_or_create_global_step())
 
             return tf.estimator.EstimatorSpec(
                 mode=mode,
-                loss=loss,
+                loss=elbo,
                 train_op=train_op
             )
 
@@ -93,5 +104,5 @@ class VAE(tf.estimator.Estimator):
             tf.summary.image('Reconstruction/x_mean', reconstruction)
             return tf.estimator.EstimatorSpec(
                 mode=mode,
-                loss=loss
+                loss=elbo
             )
