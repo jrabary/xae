@@ -18,6 +18,8 @@ class VAEDCGanDecoder(GaussianDecoder):
         depth = self._params['depth']
         num_outputs = self._params['output_channels']
 
+        z = tf.squeeze(z, axis=0)
+
         z.get_shape().assert_has_rank(2)
 
         if log(final_size, 2) != int(log(final_size, 2)):
